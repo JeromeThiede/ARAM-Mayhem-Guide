@@ -86,6 +86,8 @@ def parse_augments(html, name_set):
             res.append(hit); s = s[len(hit):]
         return res
 
+    norm_map = {re.sub(r"[^a-z0-9]", "", n.lower()): n for n in name_set}
+
     augs, seen = [], set()
     for a in soup.find_all("a", href=re.compile(r"/augments/[a-z0-9\-]+/?$")):
         slug = re.search(r"/augments/([a-z0-9\-]+)/?$", a["href"]).group(1)
@@ -111,7 +113,16 @@ def parse_augments(html, name_set):
             pcts = list(re.finditer(r"([\d.]+)%", rest))
             if len(pcts) >= 2:
                 wr = float(pcts[0].group(1)); pr = float(pcts[1].group(1))
-            if len(pcts) >= 3:
+            # Top champions are rendered as champion ICONS (images) in the row, so
+            # read them from <img alt="..."> in DOM order; fall back to inline text.
+            seen_t = set()
+            for img in a.find_all("img"):
+                alt = (img.get("alt") or "").strip()
+                key = re.sub(r"[^a-z0-9]", "", alt.lower())
+                nm = norm_map.get(key)
+                if nm and nm not in seen_t:
+                    seen_t.add(nm); top.append(nm)
+            if not top and len(pcts) >= 3:
                 top = split_champs(rest[pcts[2].end():])
         seen.add(slug)
         augs.append({"rank": rank, "name": name, "slug": slug, "rarity": rarity,
