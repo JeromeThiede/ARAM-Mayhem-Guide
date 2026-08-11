@@ -27,7 +27,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 INDEX = os.path.join(HERE, "index.html")
 
 session = requests.Session()
-session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; aram-mayhem-site/1.0)"})
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+})
 
 
 def fetch(url, tries=3):
@@ -183,8 +188,10 @@ def metasrc_slug_map(champs):
     """Match each champion to its metasrc slug using the live index (robust to naming)."""
     html = fetch(METASRC + "/lol/mayhem/champions")
     if not html:
+        print("  metasrc index: no response (blocked?)")
         return {}
     ms_slugs = set(re.findall(r"/lol/mayhem/champions/([a-z0-9\-]+)/build", html))
+    print(f"  metasrc index: {len(html)} bytes, {len(ms_slugs)} champion slugs found")
     out = {}
     for c in champs:
         name = c["name"]
@@ -214,6 +221,21 @@ def parse_metasrc_build(html):
         if len(ids) >= 6:
             break
     return {"build": ids[:6]} if ids else None
+
+
+def scrape_arammayhem_builds(champs):
+    """Fallback build source: arammayhem champion pages (reachable from CI)."""
+    builds = {}
+    for i, c in enumerate(champs, 1):
+        html = fetch(f"{BASE}/build/{c['slug']}/")
+        if html:
+            b = parse_build(html)
+            if b:
+                builds[c["slug"]] = b
+        if i % 25 == 0:
+            print(f"  {i}/{len(champs)}")
+        time.sleep(0.3)
+    return builds
 
 
 def scrape_metasrc_builds(champs):
@@ -267,9 +289,14 @@ def main():
     # item builds from metasrc (fail-safe: keep existing builds if too few come back)
     builds = current_builds()
     if not args.no_builds:
+        todo = champs if not args.limit else champs[:args.limit]
         print("Fetching item builds from metasrc…")
-        fresh = scrape_metasrc_builds(champs if not args.limit else champs[:args.limit])
-        print(f"  builds captured: {len(fresh)}")
+        fresh = scrape_metasrc_builds(todo)
+        print(f"  metasrc builds captured: {len(fresh)}")
+        if len(fresh) < 50:
+            print("metasrc unavailable — falling back to arammayhem builds…")
+            fresh = scrape_arammayhem_builds(todo)
+            print(f"  arammayhem builds captured: {len(fresh)}")
         if len(fresh) >= 50:
             builds = fresh
 
