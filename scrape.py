@@ -124,9 +124,18 @@ def parse_augments(html, name_set):
                     seen_t.add(nm); top.append(nm)
             if not top and len(pcts) >= 3:
                 top = split_champs(rest[pcts[2].end():])
+        # capture the real augment icon URL (naming is inconsistent, so don't guess)
+        icon = ""
+        for img in a.find_all("img"):
+            s = (img.get("data-src") or img.get("src") or "").strip()
+            if "_mayhem_augment" in s or "/augments/" in s.lower():
+                icon = s
+                break
+        if icon.startswith("/"):
+            icon = BASE + icon
         seen.add(slug)
         augs.append({"rank": rank, "name": name, "slug": slug, "rarity": rarity,
-                     "new": is_new, "wr": wr, "pr": pr, "top": top})
+                     "new": is_new, "wr": wr, "pr": pr, "top": top, "icon": icon})
     augs.sort(key=lambda a: a["rank"])
     return augs
 
