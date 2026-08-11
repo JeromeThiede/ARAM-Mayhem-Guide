@@ -147,18 +147,20 @@ def item_ids_after(html, marker, count):
 
 
 def parse_build(html):
-    core = item_ids_after(html, "Core Build", 3)       # top core build (highest pick rate)
-    start = item_ids_after(html, "Starting Items", 5)
-    boots_all = item_ids_after(html, "Boots", 8)
-    boots = [i for i in boots_all if i in BOOTS_IDS][:1]
-    out = {}
-    if start:
-        out["start"] = start[:3]
-    if core:
-        out["core"] = core[:3]
-    if boots:
-        out["boots"] = boots
-    return out or None
+    """Assemble a full 6-item build: the champion's most-used core items,
+    guaranteed to include boots, topped up from starting items if needed."""
+    build = item_ids_after(html, "Core Build", 6)     # most-used core items (dedup, in order)
+    boots = [i for i in item_ids_after(html, "Boots", 8) if i in BOOTS_IDS][:1]
+    if boots and boots[0] not in build:
+        build = (build[:5] + boots) if len(build) >= 6 else (build + boots)
+    if len(build) < 6:
+        for i in item_ids_after(html, "Starting Items", 6):
+            if i not in build:
+                build.append(i)
+            if len(build) >= 6:
+                break
+    build = build[:6]
+    return {"build": build} if build else None
 
 
 def main():
