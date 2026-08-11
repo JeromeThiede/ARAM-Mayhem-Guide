@@ -18,8 +18,11 @@ import requests
 from bs4 import BeautifulSoup
 
 BASE = "https://arammayhem.com"
+METASRC = "https://www.metasrc.com"
 ROLES = ["Marksman", "Assassin", "Support", "Fighter", "Tank", "Mage"]
 BOOTS_IDS = {3006, 3009, 3020, 3047, 3111, 3117, 3158, 3170}
+# consumables / wards / elixirs to exclude from builds
+CONSUMABLES = {2003, 2010, 2031, 2033, 2055, 2138, 2139, 2140, 2141, 2422, 3340, 3363, 3364, 2052}
 HERE = os.path.dirname(os.path.abspath(__file__))
 INDEX = os.path.join(HERE, "index.html")
 
@@ -172,6 +175,66 @@ def parse_build(html):
     return {"build": build} if build else None
 
 
+def _norm(s):
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def metasrc_slug_map(champs):
+    """Match each champion to its metasrc slug using the live index (robust to naming)."""
+    html = fetch(METASRC + "/lol/mayhem/champions")
+    if not html:
+        return {}
+    ms_slugs = set(re.findall(r"/lol/mayhem/champions/([a-z0-9\-]+)/build", html))
+    out = {}
+    for c in champs:
+        name = c["name"]
+        base = re.sub(r"\s+", " ", name.lower().replace("&", "").replace("'", "").replace(".", "")).strip()
+        base_and = re.sub(r"\s+", " ", name.lower().replace("&", "and").replace("'", "").replace(".", "")).strip()
+        cands = [base.replace(" ", "-"), base.replace(" ", ""),
+                 base_and.replace(" ", "-"), base_and.replace(" ", "")]
+        hit = next((s for s in cands if s in ms_slugs), None)
+        if not hit:
+            hit = next((s for s in ms_slugs if _norm(s) == _norm(name)), None)
+        if hit:
+            out[c["slug"]] = hit
+    return out
+
+
+def parse_metasrc_build(html):
+    """Read the completed items from metasrc's Item Build Order: each completed item's
+    icon is immediately followed by a gold-coin marker."""
+    ids = []
+    for cm in re.finditer(r"icons/coin\.png", html):
+        pre = html[max(0, cm.start() - 1500):cm.start()]
+        found = re.findall(r"static/items/[a-z0-9\-]*?-(\d+)\.png", pre)
+        if found:
+            iid = int(found[-1])
+            if iid not in ids and iid not in CONSUMABLES:
+                ids.append(iid)
+        if len(ids) >= 6:
+            break
+    return {"build": ids[:6]} if ids else None
+
+
+def scrape_metasrc_builds(champs):
+    smap = metasrc_slug_map(champs)
+    print(f"  metasrc matched {len(smap)}/{len(champs)} champions")
+    builds = {}
+    for i, c in enumerate(champs, 1):
+        ms = smap.get(c["slug"])
+        if not ms:
+            continue
+        html = fetch(f"{METASRC}/lol/mayhem/champions/{ms}/build")
+        if html:
+            b = parse_metasrc_build(html)
+            if b:
+                builds[c["slug"]] = b
+        if i % 25 == 0:
+            print(f"  {i}/{len(champs)}")
+        time.sleep(0.3)
+    return builds
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-builds", action="store_true", help="skip per-champion item builds")
@@ -201,23 +264,13 @@ def main():
     if len(augs) < 100:
         print("FATAL: too few augments, aborting"); sys.exit(1)
 
-    # keep existing builds unless we successfully scrape a fresh set
+    # item builds from metasrc (fail-safe: keep existing builds if too few come back)
     builds = current_builds()
     if not args.no_builds:
-        todo = champs if not args.limit else champs[:args.limit]
-        print(f"Fetching item builds for {len(todo)} champions…")
-        fresh = {}
-        for i, c in enumerate(todo, 1):
-            html = fetch(f"{BASE}/build/{c['slug']}/")
-            if html:
-                b = parse_build(html)
-                if b:
-                    fresh[c["slug"]] = b
-            if i % 25 == 0:
-                print(f"  {i}/{len(todo)}")
-            time.sleep(0.3)
+        print("Fetching item builds from metasrc…")
+        fresh = scrape_metasrc_builds(champs if not args.limit else champs[:args.limit])
         print(f"  builds captured: {len(fresh)}")
-        if len(fresh) >= 50:            # only replace if the scrape clearly worked
+        if len(fresh) >= 50:
             builds = fresh
 
     meta = {"updated": datetime.date.today().isoformat(), "patch": patch or "n/a",
