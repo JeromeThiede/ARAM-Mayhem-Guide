@@ -207,6 +207,75 @@ def metasrc_slug_map(champs):
     return out
 
 
+def _match_ms_slugs(ms_slugs, champs):
+    out = {}
+    for c in champs:
+        name = c["name"]
+        base = re.sub(r"\s+", " ", name.lower().replace("&", "").replace("'", "").replace(".", "")).strip()
+        base_and = re.sub(r"\s+", " ", name.lower().replace("&", "and").replace("'", "").replace(".", "")).strip()
+        cands = [base.replace(" ", "-"), base.replace(" ", ""),
+                 base_and.replace(" ", "-"), base_and.replace(" ", "")]
+        hit = next((s for s in cands if s in ms_slugs), None) \
+            or next((s for s in ms_slugs if _norm(s) == _norm(name)), None)
+        if hit:
+            out[c["slug"]] = hit
+    return out
+
+
+def metasrc_builds_browser(champs):
+    """Render metasrc with a headless browser (bypasses the plain-request 403 + JS)."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as e:
+        print("  playwright not available:", e)
+        return {}
+    UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+    builds = {}
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+            ctx = browser.new_context(user_agent=UA, locale="en-US",
+                                      viewport={"width": 1366, "height": 900})
+            page = ctx.new_page()
+
+            def get(url):
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                    page.wait_for_timeout(1800)
+                    return page.content()
+                except Exception as ex:
+                    print("   render failed:", url, ex)
+                    return None
+
+            idx = get(METASRC + "/lol/mayhem/champions")
+            if not idx:
+                print("  metasrc index: no render (blocked?)")
+                browser.close()
+                return {}
+            ms_slugs = set(re.findall(r"/lol/mayhem/champions/([a-z0-9\-]+)/build", idx))
+            print(f"  metasrc index (browser): {len(ms_slugs)} champion slugs found")
+            smap = _match_ms_slugs(ms_slugs, champs)
+            print(f"  metasrc matched {len(smap)}/{len(champs)} champions")
+            for i, c in enumerate(champs, 1):
+                ms = smap.get(c["slug"])
+                if not ms:
+                    continue
+                html = get(f"{METASRC}/lol/mayhem/champions/{ms}/build")
+                if html:
+                    b = parse_metasrc_build(html)
+                    if b:
+                        builds[c["slug"]] = b
+                if i % 25 == 0:
+                    print(f"  {i}/{len(champs)} (builds so far: {len(builds)})")
+            browser.close()
+    except Exception as e:
+        print("  browser scrape error:", e)
+    return builds
+
+
 def parse_metasrc_build(html):
     """Read the completed items from metasrc's Item Build Order: each completed item's
     icon is immediately followed by a gold-coin marker."""
@@ -290,15 +359,19 @@ def main():
     builds = current_builds()
     if not args.no_builds:
         todo = champs if not args.limit else champs[:args.limit]
-        print("Fetching item builds from metasrc…")
-        fresh = scrape_metasrc_builds(todo)
+        print("Fetching item builds from metasrc (headless browser)…")
+        fresh = metasrc_builds_browser(todo)
         print(f"  metasrc builds captured: {len(fresh)}")
-        if len(fresh) < 50:
-            print("metasrc unavailable — falling back to arammayhem builds…")
-            fresh = scrape_arammayhem_builds(todo)
-            print(f"  arammayhem builds captured: {len(fresh)}")
         if len(fresh) >= 50:
-            builds = fresh
+            builds = fresh   # fresh authoritative metasrc set
+        else:
+            # keep existing (e.g. browser-harvested) builds; only fill missing champions
+            print("metasrc unavailable — keeping existing builds, filling gaps via arammayhem…")
+            missing = [c for c in todo if c["slug"] not in builds]
+            if missing:
+                am = scrape_arammayhem_builds(missing)
+                builds.update(am)
+                print(f"  arammayhem filled {len(am)} missing champions")
 
     meta = {"updated": datetime.date.today().isoformat(), "patch": patch or "n/a",
             "source": "arammayhem.com", "champions": len(champs),
